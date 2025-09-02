@@ -103,11 +103,12 @@ class KalmanFilter:
             # Forecast
             f_t = F_t @ a_t
             Q_t = F_t @ R_t @ F_t.T + V
+            Q_t = Q_t.flatten()
             
             # Update
             e_t = y[t] - f_t
             
-            A_t = R_t @ F_t.T @ np.linalg.inv(Q_t)
+            A_t = (R_t @ F_t.T) / Q_t
             m_t = a_t + A_t.squeeze() * e_t  # If you want to be explicit about the shape
             I_KH = np.eye(dim) - A_t @ F_t
             C_t = I_KH @ R_t @ I_KH.T + A_t @ V @ A_t.T            

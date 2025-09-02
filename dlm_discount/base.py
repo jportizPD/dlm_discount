@@ -1,24 +1,12 @@
 import numpy as np
-
-
-import numpy as np
 import warnings
-from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple, Union, Any
-from dataclasses import dataclass
+from typing import Dict, Optional, Tuple, Union, Any
 from scipy.optimize import minimize
-from scipy.linalg import block_diag
-import logging
-import matplotlib.pyplot as plt
 from enum import Enum
 
-from .components import StateSpaceComponent, ExogenousComponent, PolynomialComponent, DummySeasonalComponent
+from .components import ExogenousComponent, PolynomialComponent, DummySeasonalComponent
 from .managers import ParameterManager, MatrixBuilder, StateVectorManager
 from .kalman import KalmanFilter, KalmanSmoother
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 
 class FitMethod(Enum):
@@ -75,7 +63,14 @@ class StateSpaceModel:
     and exogenous variables.
     """
     
-    def __init__(self):
+    def __init__(self, verbose: bool = False):
+        """
+        Initialize StateSpaceModel.
+        
+        Args:
+            verbose: If True, print status messages during fitting
+        """
+        self.verbose = verbose
         self.state_manager = StateVectorManager()
         self.matrix_builder = None
         self.parameter_manager = None
@@ -256,7 +251,8 @@ class StateSpaceModel:
                 raise ValueError(f"params must have length {len(self.params)}, got {len(params)}")
             self.params = np.array(params)
         
-        logger.info("Fitting model using Kalman filter and smoother")
+        if self.verbose:
+            print("Fitting model using Kalman filter and smoother")
         
         # Run filter
         filter_results = self.kalman_filter.filter(self.y, self.params, self.X)
@@ -397,7 +393,8 @@ class StateSpaceModel:
                 raise ValueError(f"start_params must have length {len(self.params)}, got {len(start_params)}")
             self.params = np.array(start_params)
         
-        logger.info("Fitting model using maximum likelihood estimation")
+        if self.verbose:
+            print("Fitting model using maximum likelihood estimation")
         
         def objective(params):
             """Negative log-likelihood objective function."""
@@ -409,22 +406,27 @@ class StateSpaceModel:
         # Store starting parameters
         start_params_used = self.params.copy()
         
+        # Set up optimization options
+        opt_options = {'maxiter': maxiter}
+        if self.verbose:
+            opt_options['disp'] = True
 
         opt_result = minimize(
             fun=objective,
             x0=self.params,
             method=method,
-            options={'maxiter': maxiter, 'disp': True},
+            options=opt_options,
             **kwargs
         )
 
         # Handle optimization results
         if opt_result.success:
             self.params = opt_result.x
-            logger.info(f"MLE optimization converged in {opt_result.nit} iterations")
+            if self.verbose:
+                print(f"MLE optimization converged in {opt_result.nit} iterations")
         else:
-            logger.warning(f"MLE optimization failed: {opt_result.message}")
-            logger.warning("Using starting parameters")
+            warnings.warn(f"MLE optimization failed: {opt_result.message}. Using starting parameters.", 
+                         UserWarning, stacklevel=2)
             self.params = start_params_used
         
         # Get final results with optimized parameters
@@ -441,7 +443,6 @@ class StateSpaceModel:
         )
         
         self._state = ModelState.FITTED
-        #logger.info(f"MLE fitted. Final log-likelihood: {self._results.loglikelihood:.4f}")
         
         return self._results
     
@@ -521,141 +522,6 @@ class StateSpaceModel:
         """
         self._results = None
         self._state = ModelState.BUILT if self.is_built else ModelState.UNFIT
-        logger.info("Model reset to unfit state")
+        if self.verbose:
+            print("Model reset to unfit state")
         return self
-    
-#%%
-
-
-#%%
-# =============================================================================
-# import numpy as np
-# 
-# N = 500
-# # Create time series
-# t = np.linspace(0, 100, N)  # Shorter time span for more realistic data
-# 
-# # Exogenous variables
-# x_1 = np.log( 1 + t)
-# X = np.column_stack([x_1])
-# 
-# # State dimensions
-# n_states = 3  # level, beta1_level, beta1_slope
-# 
-# # True parameters for simulation
-# # Initial states
-# level_0 = 10.0
-# beta1_level_0 = 3.0    # Initial level of beta1 coefficient
-# beta1_slope_0 = 0.1    # Initial slope/velocity of beta1 coefficient
-# 
-# # Process noise variances (how much states change over time)
-# Q_level = 10           # Level evolves slowly
-# Q_beta1_level = 0.5    # Beta1 level evolves slowly
-# Q_beta1_slope = 0.1    # Beta1 slope evolves very slowly
-# 
-# # Observation noise variance
-# R = 0.010
-# 
-# # Initialize arrays
-# states = np.zeros((N, n_states))
-# y_t = np.zeros(N)
-# 
-# # Initial state: [level, beta1_level, beta1_slope]
-# states[0] = [level_0, beta1_level_0, beta1_slope_0]
-# 
-# # Simulate state evolution and observations
-# for i in range(N):
-#     if i > 0:
-#         # State evolution with polynomial structure for beta1
-#         # Level: random walk
-#         states[i, 0] = states[i-1, 0] + np.random.normal(0, np.sqrt(Q_level))
-#         
-#         # Beta1 damped polynomial of order 2: level + slope evolution with damping
-#         damping_factor = 1  # Damping parameter (< 1 means trend decays over time)
-#         states[i, 1] = states[i-1, 1] + damping_factor * states[i-1, 2] + np.random.normal(0, np.sqrt(Q_beta1_level))  # level = prev_level + damped_slope + noise
-#         states[i, 2] = damping_factor * states[i-1, 2] + np.random.normal(0, np.sqrt(Q_beta1_slope))                   # slope = damped_prev_slope + noise
-#     
-#     # Observation equation
-#     level_t = states[i, 0]
-#     beta1_t = states[i, 1]  # Use the level component of beta1
-#     
-#     y_t[i] = level_t + beta1_t * X[i, 0] + np.random.normal(0, np.sqrt(R))
-# 
-# # Create and fit the model
-# model = (StateSpaceModel()
-#          .add_polynomial(order=1, name="local-level", m0=[10], C0= np.eye(1))      # Random walk for level
-#          .add_exogenous(order=2, name="ex_1", damped=False, m0=[3., 0.1],  C0=np.eye(2))        # Order 2 polynomial for beta1 (level + slope)
-#          .build_model()
-#          .set_data(y=y_t, X=X))
-# 
-# 
-# params = model.params
-# model.fit_kalman(params)
-# 
-# 
-# #%%
-# from state_space import StateSpaceModel
-# 
-# exog_specs = [
-#     {'order': 2},
-# 
-# ]
-# 
-# polynomial_order = 1
-# seasonal_periods = 1
-# k_states = polynomial_order + (seasonal_periods - 1) + sum(spec['order'] for spec in exog_specs)
-# 
-# # Initialize state vector with zeros
-# m0 = np.array([1, 3, 0.1])
-# C0 = np.diag(k_states * [1e6])
-# 
-# 
-# # ==============================================================================
-# # MODEL INITIALIZATION
-# # ==============================================================================
-# # Create and initialize the State Space Model
-# model = StateSpaceModel(
-#     y=y_t,
-#     X=X,
-#     m0=m0,
-#     C0=C0,
-#     polynomial_order=polynomial_order,
-#     seasonal_periods=seasonal_periods,
-#     exog_specs=exog_specs
-# )
-# optim_params = model.fit()
-# 
-# 
-# 
-# #%%
-# 
-# # Example of using both fitting methods:
-# 
-# # Method 1: Fit using Kalman filter with known parameters
-# # (You would need to provide the true parameters or good estimates)
-# # kalman_results = model.fit_kalman()
-# 
-# # Method 2: Fit using MLE estimation
-# mle_results = model.fit_mle(maxiter=1000)
-# 
-# print(model.summary())
-# print(f"\nFitted parameters: {model.params}")
-# print(f"True observation variance: {R}")
-# print(f"Estimated observation variance: {np.exp(model.params[0])}")  # First param is log(obs_var)
-# 
-# #%%
-# plt.plot(mle_results.smoothed_results['smoothed_state'][0])
-# plt.plot(states[:,0])
-# plt.show()
-# 
-# plt.plot(mle_results.smoothed_results['smoothed_state'][1])
-# plt.plot(states[:,1])
-# plt.show()
-# 
-# plt.plot(mle_results.smoothed_results['smoothed_state'][2])
-# plt.plot(states[:,2])
-# plt.show()
-# 
-# plt.plot(mle_results.smoothed_results['smoothed_forecasts'])
-# plt.plot(y_t)
-# =============================================================================
