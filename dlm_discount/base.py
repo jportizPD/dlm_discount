@@ -273,8 +273,7 @@ class StateSpaceModel:
         return self._results
     
     
-    def forecast(self, steps: int, X: Optional[np.ndarray] = None,
-             return_variance: bool = True) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+    def forecast(self, steps: int, X: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Generate forecasts for future time periods.
         
@@ -283,16 +282,18 @@ class StateSpaceModel:
         
         Args:
             steps: Number of steps ahead to forecast
-            X_future: Future values of exogenous variables with shape (steps, n_vars)
-                     Required if model has exogenous components
-            return_variance: If True, also return forecast variances
+            X: Future values of exogenous variables with shape (steps, n_vars)
+               Required if model has exogenous components
             
         Returns:
-            forecasts: Array of forecasted values (steps,)
-            variances: Array of forecast variances (steps,) if return_variance=True
+            Tuple containing:
+            - forecast: Array of forecasted values (steps,)
+            - forecast_variance: Array of forecast variances (steps,)
+            - state_forecast: Array of forecasted state vectors (state_dim, steps)
+            - state_covariance: Array of state covariance matrices (state_dim, state_dim, steps)
             
         Raises:
-            ValueError: If model not fitted or X_future dimensions incorrect
+            ValueError: If model not fitted or X dimensions incorrect
         """
         if not self.is_fitted:
             raise ValueError("Model must be fitted before forecasting")
@@ -303,14 +304,14 @@ class StateSpaceModel:
         
         if has_exog:
             if X is None:
-                raise ValueError("X_future required for model with exogenous components")
+                raise ValueError("X required for model with exogenous components")
             X = np.asarray(X)
             if X.ndim == 1:
                 X = X.reshape(-1, 1)
             if X.shape[0] != steps:
-                raise ValueError(f"X_future must have {steps} rows")
+                raise ValueError(f"X must have {steps} rows")
             if self.X is not None and X.shape[1] != self.X.shape[1]:
-                raise ValueError(f"X_future must have {self.X.shape[1]} columns")
+                raise ValueError(f"X must have {self.X.shape[1]} columns")
         
         # Get final filtered state and covariance
         final_state = self._results.filter_results['filtered_state'][:, -1]
@@ -318,30 +319,39 @@ class StateSpaceModel:
         
         # Get parameters and matrices
         param_dict = self.parameter_manager.unpack_parameters(self.params)
-        T = self.matrix_builder.build_transition_matrix(param_dict)
         obs_var = param_dict['observation_variance']
         V = np.array([[obs_var]])
         
+        # Get state dimensions
+        state_dim = len(final_state)
+        
         # Initialize forecast arrays
-        forecasts = np.zeros(steps)
-        if return_variance:
-            variances = np.zeros(steps)
+        forecast = np.zeros(steps)
+        forecast_variance = np.zeros(steps)
+        state_forecast = np.zeros((state_dim, steps))
+        state_covariance = np.zeros((state_dim, state_dim, steps))
         
         # Current state for recursion
         m_t = final_state.copy()
         C_t = final_cov.copy()
         
+        P_t = self.transition @ C_t @ self.transition.T
+        W_t = self.kalman_filter._compute_evolution_variance(P_t)
+
+        
         for h in range(steps):
-            # State prediction
-            a_t = T @ m_t
-            P_t = T @ C_t @ T.T
+            # State prediction (one-step ahead state forecast)
+            a_t = self.transition @ m_t
+            P_t = self.transition @ C_t @ self.transition.T
             
             # Add evolution variance
-            W_t = self.kalman_filter._compute_evolution_variance(P_t)
             R_t = P_t + W_t
             
+            # Store state forecast and covariance for this step
+            state_forecast[:, h] = a_t
+            state_covariance[:, :, h] = R_t
+            
             # Build design matrix for forecast horizon
-            # Note: t index should be len(self.y) + h for proper indexing
             t_forecast = len(self.y) + h
             
             # For exogenous components, we need to pass future X values
@@ -352,21 +362,18 @@ class StateSpaceModel:
             
             F_t = F_t.reshape(1, -1)
             
-            # Forecast
+            # Observation forecast and variance
             f_t = F_t @ a_t
             Q_t = F_t @ R_t @ F_t.T + V
             
-            forecasts[h] = f_t.item()
-            if return_variance:
-                variances[h] = Q_t.item()
+            forecast[h] = f_t.item()
+            forecast_variance[h] = Q_t.item()
             
             # Update state for next iteration
             m_t = a_t
             C_t = R_t
         
-        if return_variance:
-            return forecasts, variances
-        return forecasts
+        return forecast, forecast_variance, state_forecast, state_covariance
     
     def fit_mle(self, start_params: Optional[np.ndarray] = None, 
                method: str = 'L-BFGS-B', maxiter: int = 100000, 
